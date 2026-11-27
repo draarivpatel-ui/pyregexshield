@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyregexshield"
+version = "1.0.0"
+description = "Zero-dependency static ReDoS analyzer, regex AST linter, and safe-compile guard"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "pyregexshield contributors" }]
+keywords = ["regex", "redos", "security", "static-analysis", "sarif", "lint"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/draarivpatel-ui/pyregexshield"
+Repository = "https://github.com/draarivpatel-ui/pyregexshield"
+Issues = "https://github.com/draarivpatel-ui/pyregexshield/issues"
+Security = "https://github.com/draarivpatel-ui/pyregexshield/security/advisories"
+
+[project.scripts]
+pyregexshield = "pyregexshield.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pyregexshield = ["py.typed"]

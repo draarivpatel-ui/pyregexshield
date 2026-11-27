@@ -1,0 +1,8 @@
+include README.md
+include LICENSE
+include SECURITY.md
+include CONTRIBUTING.md
+include MANIFEST.in
+recursive-include docs *.md
+recursive-include tests *.py
+recursive-include src/pyregexshield *.py py.typed
