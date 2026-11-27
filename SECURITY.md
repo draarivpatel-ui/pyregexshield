@@ -54,9 +54,9 @@ Out of scope:
 
 ## Response expectations
 
-Reports are triaged as time permits. A reporter can expect an initial
-acknowledgement within 14 days and a severity assessment or request for more
-information within 30 days. Security fixes are prioritized over feature work.
+Reports are acknowledged within 3 business days. Initial triage is targeted
+within 14 days. A fix, mitigation, or documented resolution is targeted within
+90 days. Security fixes are prioritized over feature work.
 
 ## Security design notes
 
