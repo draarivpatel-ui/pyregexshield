@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError
 
 from pyregexshield import (
     InputTooLongError,
+    OutputTooLongError,
     RegexPolicy,
     UnsafeRegexError,
     assert_safe_regex,
@@ -244,3 +245,48 @@ class SafeCompileApiTests(unittest.TestCase):
     def test_compile_rejects_non_integer_flags(self):
         with self.assertRaises(TypeError):
             safe_compile("abc", "i")
+
+class SafePatternAdversarialRegressionTests(unittest.TestCase):
+    def test_compiled_regex_is_not_publicly_exposed(self):
+        compiled = safe_compile(r"^[a-z]+$")
+        self.assertFalse(hasattr(compiled, "compiled"))
+        self.assertFalse(hasattr(compiled, "__dict__"))
+
+    def test_sub_matches_stdlib_empty_match_semantics(self):
+        for pattern, repl, string in (
+            ("x*", "-", "abxd"),
+            ("a?", "-", "aab"),
+            ("^", "-", "ab"),
+            ("$", "-", "ab"),
+            (r"\b", "-", "ab"),
+        ):
+            safe = safe_compile(pattern)
+            self.assertEqual(safe.sub(repl, string), re.sub(pattern, repl, string), (pattern, string))
+            self.assertEqual(safe.subn(repl, string), re.subn(pattern, repl, string), (pattern, string))
+
+    def test_sub_count_matches_stdlib(self):
+        safe = safe_compile("a")
+        self.assertEqual(safe.sub("x", "aaaa", 2), re.sub("a", "x", "aaaa", count=2))
+        self.assertEqual(safe.sub("x", "aaaa", -1), "aaaa")
+
+    def test_output_cap_blocks_amplified_literal_replacement(self):
+        policy = RegexPolicy(max_input_length=10, max_output_length=20)
+        compiled = safe_compile("a?", policy=policy)
+        with self.assertRaises(OutputTooLongError) as caught:
+            compiled.sub("X" * 10, "a" * 10)
+        self.assertEqual(caught.exception.maximum, 20)
+
+    def test_output_cap_blocks_amplified_callable_replacement(self):
+        policy = RegexPolicy(max_input_length=4, max_output_length=8)
+        compiled = safe_compile("a", policy=policy)
+        with self.assertRaises(OutputTooLongError):
+            compiled.sub(lambda match: "X" * 5, "aa")
+
+    def test_output_cap_accepts_bounded_replacement(self):
+        policy = RegexPolicy(max_input_length=10, max_output_length=20)
+        compiled = safe_compile("a", policy=policy)
+        self.assertEqual(compiled.sub("XX", "aaa"), "XXXXXX")
+
+    def test_policy_rejects_zero_output_length(self):
+        with self.assertRaises(ValueError):
+            RegexPolicy(max_output_length=0)

@@ -20,8 +20,8 @@ class RegexPolicy:
     max_pattern_length and max_depth are hard parser limits. max_quantifier is
     a hard parser cap for a single numeric upper bound. max_safe_repeat and
     max_expansion_factor are analysis thresholds for syntactically valid but
-    dangerous repetition. max_input_length is enforced by SafePattern at
-    runtime.
+    dangerous repetition. max_input_length and max_output_length are enforced
+    by SafePattern at runtime.
     """
 
     max_pattern_length: int = 4096
@@ -30,6 +30,7 @@ class RegexPolicy:
     max_safe_repeat: int = 1000
     max_expansion_factor: int = 10000
     max_input_length: int = 65536
+    max_output_length: int = 1048576
     max_scan_file_bytes: int = 1048576
     minimum_block_severity: str = "medium"
 
@@ -41,6 +42,7 @@ class RegexPolicy:
             "max_safe_repeat",
             "max_expansion_factor",
             "max_input_length",
+            "max_output_length",
             "max_scan_file_bytes",
         )
         for field in integer_fields:

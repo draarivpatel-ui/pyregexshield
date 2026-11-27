@@ -262,3 +262,58 @@ class ScannerFilesystemTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 scan_directory(directory, max_files=0)
+
+class ScannerAdversarialRegressionTests(unittest.TestCase):
+    def test_explicit_literal_concatenation_is_analyzed(self):
+        report = scan_python_source("import re\nre.compile('(a+' + ')+')\n", filename="x.py")
+        self.assertEqual(len(report.findings), 1)
+
+    def test_compile_assignment_alias_is_analyzed(self):
+        report = scan_python_source("import re\nrc = re.compile\nrc('(a+)+')\n", filename="x.py")
+        self.assertEqual(len(report.findings), 1)
+
+    def test_function_alias_assignment_is_analyzed(self):
+        report = scan_python_source("from re import compile as rc\nrc2 = rc\nrc2('(a+)+')\n", filename="x.py")
+        self.assertEqual(len(report.findings), 1)
+
+    def test_module_assignment_alias_is_analyzed(self):
+        report = scan_python_source("import re\nrx = re\nrx.compile('(a+)+')\n", filename="x.py")
+        self.assertEqual(len(report.findings), 1)
+
+    def test_nul_source_returns_diagnostic(self):
+        report = scan_python_source("\x00", filename="bad.py")
+        self.assertEqual(report.diagnostics[0].code, "SCAN_PYTHON_SYNTAX_ERROR")
+
+    def test_sarif_column_kind_and_relative_percent_encoded_uri(self):
+        report = scan_python_source("import re\nre.compile(r'(a+)+')\n", filename="sub dir/x y.py")
+        sarif = report.to_sarif()
+        run = sarif["runs"][0]
+        self.assertEqual(run["columnKind"], "unicodeCodePoints")
+        uri = run["artifacts"][0]["location"]["uri"]
+        self.assertEqual(uri, "sub%20dir/x%20y.py")
+        self.assertNotIn("/" + "Users" + "/", json.dumps(sarif))
+
+    def test_sarif_columns_are_unicode_code_points(self):
+        report = scan_python_source('x = "é"; re.compile(r"(a+)+")\n', filename="x.py")
+        region = report.to_sarif()["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]
+        self.assertEqual(region["startColumn"], 10)
+
+    def test_text_output_neutralizes_control_characters(self):
+        report = scan_python_source("import re\nre.compile(r'(a+)+')\n", filename="x\x1b[31m.py")
+        text = report.to_text()
+        self.assertNotIn("\x1b", text)
+        self.assertIn("\\x1B", text)
+
+    def test_scan_directory_rejects_symlink_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            real = Path(directory) / "real"
+            real.mkdir()
+            (real / "x.py").write_text("import re\nre.compile(r'(a+)+')\n", encoding="utf-8")
+            link = Path(directory) / "linked-root"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            report = scan_directory(link)
+            self.assertEqual(report.files_scanned, 0)
+            self.assertEqual(report.diagnostics[0].code, "SCAN_SYMLINK_SKIPPED")

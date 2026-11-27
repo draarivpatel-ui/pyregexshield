@@ -5,6 +5,7 @@ from __future__ import annotations
 from .analyzer import AnalysisResult, Finding, analyze_regex
 from .api import (
     InputTooLongError,
+    OutputTooLongError,
     SafePattern,
     assert_safe_regex,
     safe_compile,
@@ -28,6 +29,7 @@ __all__ = [
     "DEFAULT_POLICY",
     "Finding",
     "InputTooLongError",
+    "OutputTooLongError",
     "PyRegexShieldError",
     "RegexPatternError",
     "RegexPolicy",

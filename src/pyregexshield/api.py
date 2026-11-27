@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import operator
 import re
-from dataclasses import dataclass, replace
+from dataclasses import FrozenInstanceError, replace
 from types import MappingProxyType
 from typing import Optional
 
@@ -21,72 +22,148 @@ class InputTooLongError(ValueError):
         self.maximum = maximum
 
 
-@dataclass(frozen=True)
-class SafePattern:
-    """A compiled pattern wrapper with a runtime input length budget."""
+class OutputTooLongError(ValueError):
+    """Raised when substitution output would exceed the configured budget."""
 
-    pattern: str
-    flags: int
-    compiled: object
-    policy: RegexPolicy
-    result: AnalysisResult
+    def __init__(self, length: int, maximum: int) -> None:
+        super().__init__("output length %d exceeds limit %d" % (length, maximum))
+        self.length = length
+        self.maximum = maximum
+
+
+class SafePattern:
+    """A compiled pattern wrapper with runtime input and output budgets.
+
+    The compiled regex object is intentionally private. Callers should use the
+    bounded methods on this wrapper rather than bypassing them through the
+    underlying re.Pattern object.
+    """
+
+    __slots__ = ("_pattern", "_flags", "_compiled", "_policy", "_result")
+
+    def __init__(self, pattern: str, flags: int, compiled, policy: RegexPolicy, result: AnalysisResult) -> None:
+        object.__setattr__(self, "_pattern", pattern)
+        object.__setattr__(self, "_flags", flags)
+        object.__setattr__(self, "_compiled", compiled)
+        object.__setattr__(self, "_policy", policy)
+        object.__setattr__(self, "_result", result)
+
+    def __setattr__(self, name, value) -> None:
+        raise FrozenInstanceError("SafePattern is immutable")
+
+    def __delattr__(self, name) -> None:
+        raise FrozenInstanceError("SafePattern is immutable")
+
+    @property
+    def pattern(self) -> str:
+        return self._pattern
+
+    @property
+    def flags(self) -> int:
+        return self._flags
+
+    @property
+    def policy(self) -> RegexPolicy:
+        return self._policy
+
+    @property
+    def result(self) -> AnalysisResult:
+        return self._result
+
+    def __repr__(self) -> str:
+        return "SafePattern(pattern=%r, flags=%r)" % (self._pattern, self._flags)
 
     def _check_input(self, string: str) -> str:
         if not isinstance(string, str):
             raise TypeError("input must be str")
-        if len(string) > self.policy.max_input_length:
-            raise InputTooLongError(len(string), self.policy.max_input_length)
+        if len(string) > self._policy.max_input_length:
+            raise InputTooLongError(len(string), self._policy.max_input_length)
         return string
 
     def match(self, string: str, pos: int = 0, endpos: Optional[int] = None):
         string = self._check_input(string)
         if endpos is None:
-            return self.compiled.match(string, pos)
-        return self.compiled.match(string, pos, endpos)
+            return self._compiled.match(string, pos)
+        return self._compiled.match(string, pos, endpos)
 
     def search(self, string: str, pos: int = 0, endpos: Optional[int] = None):
         string = self._check_input(string)
         if endpos is None:
-            return self.compiled.search(string, pos)
-        return self.compiled.search(string, pos, endpos)
+            return self._compiled.search(string, pos)
+        return self._compiled.search(string, pos, endpos)
 
     def fullmatch(self, string: str, pos: int = 0, endpos: Optional[int] = None):
         string = self._check_input(string)
         if endpos is None:
-            return self.compiled.fullmatch(string, pos)
-        return self.compiled.fullmatch(string, pos, endpos)
+            return self._compiled.fullmatch(string, pos)
+        return self._compiled.fullmatch(string, pos, endpos)
 
     def findall(self, string: str, pos: int = 0, endpos: Optional[int] = None):
         string = self._check_input(string)
         if endpos is None:
-            return self.compiled.findall(string, pos)
-        return self.compiled.findall(string, pos, endpos)
+            return self._compiled.findall(string, pos)
+        return self._compiled.findall(string, pos, endpos)
 
     def finditer(self, string: str, pos: int = 0, endpos: Optional[int] = None):
         string = self._check_input(string)
         if endpos is None:
-            return self.compiled.finditer(string, pos)
-        return self.compiled.finditer(string, pos, endpos)
+            return self._compiled.finditer(string, pos)
+        return self._compiled.finditer(string, pos, endpos)
 
     def split(self, string: str, maxsplit: int = 0):
         string = self._check_input(string)
-        return self.compiled.split(string, maxsplit)
+        return self._compiled.split(string, maxsplit)
+
+    def _substitute(self, repl, string: str, count: int):
+        string = self._check_input(string)
+        count = operator.index(count)
+        if count < 0:
+            return string, 0
+
+        maximum = self._policy.max_output_length
+        pieces = []
+        total = 0
+
+        def append(piece: str) -> None:
+            nonlocal total
+            total += len(piece)
+            if total > maximum:
+                raise OutputTooLongError(total, maximum)
+            pieces.append(piece)
+
+        end = 0
+        replacements = 0
+        for match in self._compiled.finditer(string):
+            if count and replacements >= count:
+                break
+            append(string[end:match.start()])
+            if callable(repl):
+                expansion = repl(match)
+            else:
+                if isinstance(repl, str) and len(repl) > maximum:
+                    raise OutputTooLongError(len(repl), maximum)
+                expansion = match.expand(repl)
+            if not isinstance(expansion, str):
+                raise TypeError("replacement must return str")
+            append(expansion)
+            end = match.end()
+            replacements += 1
+        append(string[end:])
+        return "".join(pieces), replacements
 
     def sub(self, repl, string: str, count: int = 0):
-        string = self._check_input(string)
-        return self.compiled.sub(repl, string, count)
+        return self._substitute(repl, string, count)[0]
 
     def subn(self, repl, string: str, count: int = 0):
-        string = self._check_input(string)
-        return self.compiled.subn(repl, string, count)
+        return self._substitute(repl, string, count)
 
     @property
     def groups(self) -> int:
-        return self.compiled.groups
+        return self._compiled.groups
 
     @property
     def groupindex(self):
-        return MappingProxyType(dict(self.compiled.groupindex))
+        return MappingProxyType(dict(self._compiled.groupindex))
 
 
 def _syntax_failure_result(result: AnalysisResult, error: re.error) -> AnalysisResult:

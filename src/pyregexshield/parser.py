@@ -48,7 +48,9 @@ def scan_plain_inline_flags(pattern: str) -> int:
     """Find plain (?flags) directives that Python applies globally.
 
     This linear lexical scan skips escaped text, bracket expressions, and (?#...)
-    comments. It intentionally accepts only positive letters because Python
+    comments. Once verbose mode is active it also skips unescaped verbose
+    comments, so a directive written inside such a comment does not become a
+    global flag. It intentionally accepts only positive letters because Python
     requires a colon after a hyphenated inline flag list.
     """
 
@@ -68,6 +70,14 @@ def scan_plain_inline_flags(pattern: str) -> int:
         if char == "[":
             in_class = True
             index += 1
+            continue
+        if flags & re.VERBOSE and char == "#":
+            newline = len(pattern)
+            for marker in ("\n", "\r"):
+                position = pattern.find(marker, index + 1)
+                if position >= 0:
+                    newline = min(newline, position)
+            index = newline + 1 if newline < len(pattern) else len(pattern)
             continue
         if pattern.startswith("(?#", index):
             close = pattern.find(")", index + 3)
@@ -116,6 +126,7 @@ class RegexParser:
         self.group_names = {}
         self.open_group_indices = []
         self.open_group_names = []
+        self.deferred_conditional_refs = []
 
     def parse(self) -> Node:
         self.initial_flags |= scan_plain_inline_flags(self.pattern)
@@ -127,11 +138,16 @@ class RegexParser:
             )
         if self.initial_flags & re.LOCALE:
             raise RegexPatternError("re.LOCALE cannot be used with a str pattern", 0)
+        if self.initial_flags & re.ASCII and self.initial_flags & re.UNICODE:
+            raise RegexPatternError("ASCII and UNICODE flags are incompatible", 0)
         root = self._parse_alternation(0, self.initial_flags, False)
         if self.pos < self.length:
             if self.pattern[self.pos] == ")":
                 self._error("unbalanced parenthesis", self.pos)
             self._error("unexpected trailing input", self.pos)
+        for ref, position in self.deferred_conditional_refs:
+            if ref > self.group_count:
+                self._error("invalid group reference %d" % ref, position)
         self._validate_lookbehind_widths(root)
         return root
 
@@ -220,7 +236,7 @@ class RegexParser:
             return
         while self.pos < self.length:
             char = self.pattern[self.pos]
-            if char.isspace():
+            if char in " \t\n\r\f\v":
                 self.pos += 1
                 continue
             if char == "#":
@@ -518,7 +534,15 @@ class RegexParser:
                 return directive
             if remove & (re.ASCII | re.UNICODE | re.LOCALE):
                 self._error("ASCII, UNICODE, and LOCALE inline flags cannot be turned off", start)
+            if add & re.LOCALE:
+                self._error("re.LOCALE cannot be used with a str pattern", start)
+            if add & re.ASCII and add & re.UNICODE:
+                self._error("ASCII and UNICODE inline flags are incompatible", start)
             child_flags = (flags | add) & ~remove
+            if add & re.ASCII:
+                child_flags = (child_flags | re.ASCII) & ~(re.UNICODE | re.LOCALE)
+            elif add & re.UNICODE:
+                child_flags = (child_flags | re.UNICODE) & ~(re.ASCII | re.LOCALE)
             kind = "noncapture"
         else:
             self._error("unknown group extension", self.pos)
@@ -568,10 +592,10 @@ class RegexParser:
 
     def _validate_conditional_reference(self, ref, position: int) -> None:
         if isinstance(ref, int):
-            if ref < 1 or ref > self.group_count:
+            if ref < 1:
                 self._error("invalid group reference %d" % ref, position)
-            if ref in self.open_group_indices:
-                self._error("cannot refer to an open group", position)
+            if ref > self.group_count:
+                self.deferred_conditional_refs.append((ref, position))
         else:
             if ref not in self.group_names:
                 self._error("unknown group name %r" % ref, position)
@@ -582,27 +606,35 @@ class RegexParser:
         add = 0
         remove = 0
         removing = False
-        saw_flag = False
+        saw_separator = False
+        saw_add = False
+        saw_remove = False
         while self.pos < self.length:
             char = self._peek()
             if char in ":)":
                 terminator = self._take()
-                if not saw_flag:
+                if not saw_add and not saw_remove:
                     self._error("missing inline flags", start)
+                if saw_separator and not saw_remove:
+                    self._error("missing inline flags after '-'", start)
+                if add & remove:
+                    self._error("inline flags cannot be turned on and off in one group", start)
                 return add, remove, terminator
             if char == "-":
                 if removing:
                     self._error("duplicate inline flag separator", self.pos)
                 removing = True
+                saw_separator = True
                 self.pos += 1
                 continue
             if char not in _FLAG_VALUES:
                 self._error("unknown inline flag %r" % char, self.pos)
-            saw_flag = True
             value = _FLAG_VALUES[char]
             if removing:
+                saw_remove = True
                 remove |= value
             else:
+                saw_add = True
                 add |= value
             self.pos += 1
         self._error("unterminated inline flags", start)
@@ -708,19 +740,33 @@ class RegexParser:
             return _Escape("literal", value, (escape_start, self.pos))
 
         if char.isdigit():
-            digits = char
-            while len(digits) < 3 and self.pos < self.length and self.pattern[self.pos].isdigit():
-                digits += self.pattern[self.pos]
-                self.pos += 1
             if in_class:
-                if not all(digit in "01234567" for digit in digits):
-                    self._error("bad escape \\%s" % digits[0], escape_start)
+                if char in "89":
+                    self._error("bad escape \\%s" % char, escape_start)
+                digits = char
+                while len(digits) < 3 and self.pos < self.length and self.pattern[self.pos] in "01234567":
+                    digits += self.pattern[self.pos]
+                    self.pos += 1
                 value = int(digits, 8)
                 if value > 0o377:
                     self._error("octal escape outside range 0 to 0o377", escape_start)
                 return _Escape("literal", chr(value), (escape_start, self.pos))
 
-            if char == "0" or (len(digits) == 3 and all(digit in "01234567" for digit in digits)):
+            if char == "0":
+                digits = char
+                while len(digits) < 3 and self.pos < self.length and self.pattern[self.pos] in "01234567":
+                    digits += self.pattern[self.pos]
+                    self.pos += 1
+                value = int(digits, 8)
+                if value > 0o377:
+                    self._error("octal escape outside range 0 to 0o377", escape_start)
+                return _Escape("literal", chr(value), (escape_start, self.pos))
+
+            digits = char
+            while len(digits) < 3 and self.pos < self.length and self.pattern[self.pos].isdigit():
+                digits += self.pattern[self.pos]
+                self.pos += 1
+            if len(digits) == 3 and all(digit in "01234567" for digit in digits):
                 value = int(digits, 8)
                 if value > 0o377:
                     self._error("octal escape outside range 0 to 0o377", escape_start)

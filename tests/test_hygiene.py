@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -77,12 +78,20 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertEqual(count, 10)
 
     def test_no_pycache_or_pyc_in_checkout(self):
-        offenders = []
-        for path in ROOT.rglob("*"):
-            if ".git" in path.parts:
-                continue
-            if path.name == "__pycache__" or path.suffix == ".pyc":
-                offenders.append(path)
+        completed = subprocess.run(
+            ["git", "ls-files"],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        tracked = completed.stdout.splitlines()
+        offenders = [
+            path for path in tracked
+            if path.endswith(".pyc") or "__pycache__/" in path or path == "__pycache__"
+        ]
         self.assertEqual(offenders, [])
 
     def test_source_files_use_future_annotations(self):

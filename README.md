@@ -84,7 +84,10 @@ the pattern.
 
 The returned frozen `SafePattern` supports `match`, `search`, `fullmatch`,
 `findall`, `finditer`, `split`, `sub`, and `subn`. Every method rejects input
-longer than `policy.max_input_length`, which defaults to 65536 characters:
+longer than `policy.max_input_length`, which defaults to 65536 characters. The
+underlying compiled `re.Pattern` object is intentionally private so callers use
+the bounded methods. Substitutions are built incrementally and reject output
+longer than `policy.max_output_length`, which defaults to 1048576 characters:
 
 ```python
 from pyregexshield import InputTooLongError, RegexPolicy, safe_compile
@@ -164,8 +167,8 @@ that do not support them.
 The source scanner uses Python's stdlib `ast` module. It does not import or
 execute the target file. It finds literal regex arguments to `re.compile`,
 `re.match`, `re.search`, `re.fullmatch`, `re.findall`, `re.finditer`,
-`re.sub`, `re.subn`, and `re.split`, including common import aliases and
-literal flag expressions.
+`re.sub`, `re.subn`, and `re.split`, including common import and assignment
+aliases, explicit concatenation of string literals, and literal flag expressions.
 
 ```python
 from pyregexshield import scan_python_source
@@ -222,6 +225,7 @@ policy = RegexPolicy(
     max_safe_repeat=256,
     max_expansion_factor=2048,
     max_input_length=8192,
+    max_output_length=65536,
     minimum_block_severity="low",
 )
 ```
@@ -245,10 +249,13 @@ length limit is used by `SafePattern` at runtime.
 - `max_input_length` reduces the maximum work available to a backtracking
   pattern, but CPython `re` has no execution timeout. A large enough budget
   can still be expensive. Use a process boundary or a non-backtracking engine
-  when you need a hard time guarantee.
-- The source scanner analyzes literal strings only. It intentionally does not
-  evaluate variables, f-strings, concatenation helper functions, or imported
-  constants.
+  when you need a hard time guarantee. Python objects in the same process are
+  not a hard privilege boundary, so `max_output_length` limits accidental or
+  attacker-influenced substitution amplification rather than malicious Python
+  code that already runs in the process.
+- The source scanner analyzes literal strings and addition of literal strings.
+  It intentionally does not evaluate variables, f-strings, concatenation helper
+  functions, or imported constants.
 - Possessive quantifiers and atomic groups can reduce backtracking on Python
   3.11+, but the analyzer remains conservative around complex surrounding
   structure.
@@ -260,6 +267,8 @@ Run the tests from a checkout:
 ```
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
+
+The suite currently contains 1108 tests.
 
 Run the CLI without installing:
 

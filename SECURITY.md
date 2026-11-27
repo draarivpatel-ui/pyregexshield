@@ -62,7 +62,8 @@ information within 30 days. Security fixes are prioritized over feature work.
 
 - Analysis is static and never executes the analyzed regex.
 - Compilation through `safe_compile` occurs only after analysis.
-- `SafePattern` applies an input length budget before every match operation.
+- `SafePattern` applies an input length budget before every match operation and
+  an output length budget during substitution.
 - The scanner uses AST parsing rather than importing target code.
 - The directory scanner does not follow symlinks and skips non-regular files.
 - PyPI publication uses GitHub OIDC trusted publishing rather than a stored

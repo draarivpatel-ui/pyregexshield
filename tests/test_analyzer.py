@@ -343,3 +343,19 @@ class AnalyzerCoreTests(unittest.TestCase):
         result = analyze_regex(r"(a+)\1.*.*")
         spans = [finding.span for finding in result.findings]
         self.assertEqual(spans, sorted(spans))
+
+class AnalyzerAdversarialRegressionTests(unittest.TestCase):
+    def test_scoped_unicode_overrides_outer_ascii_for_overlap(self):
+        result = analyze_regex(r"(?u:(\w|[α-ω])+)", flags=re.ASCII)
+        self.assertIn("REDOS_OVERLAPPING_ALTERNATION", {finding.code for finding in result.findings})
+        self.assertFalse(result.safe)
+
+    def test_ascii_ignorecase_does_not_use_unicode_casefolding(self):
+        result = analyze_regex(r"(k|\u212a)+", flags=re.IGNORECASE | re.ASCII)
+        self.assertEqual(result.findings, ())
+        self.assertTrue(result.safe)
+
+    def test_unicode_ignorecase_uses_unicode_casefolding(self):
+        result = analyze_regex(r"(k|\u212a)+", flags=re.IGNORECASE)
+        self.assertIn("REDOS_OVERLAPPING_ALTERNATION", {finding.code for finding in result.findings})
+        self.assertFalse(result.safe)

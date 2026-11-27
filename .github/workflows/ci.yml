@@ -54,6 +54,19 @@ jobs:
           python -m pip install build
           python -m build
 
+      - name: Inspect wheel contents
+        run: |
+          python - <<'PY'
+          import zipfile
+          wheel = "dist/pyregexshield-1.0.0-py3-none-any.whl"
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+          assert "pyregexshield/py.typed" in names
+          assert not any(name.startswith("tests/") or "/tests/" in name for name in names)
+          assert not any("__pycache__" in name or name.endswith(".pyc") for name in names)
+          assert any(name.startswith("pyregexshield/") and name.endswith(".py") for name in names)
+          PY
+
       - name: Install wheel and run installed CLI smoke test
         run: |
           python -m pip install --force-reinstall dist/pyregexshield-1.0.0-py3-none-any.whl

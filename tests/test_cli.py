@@ -172,3 +172,18 @@ class CliCoreTests(unittest.TestCase):
             path.write_text("import re\nre.compile(r'(a+)+')\n", encoding="utf-8")
             completed = run_cli("scan", str(path))
             self.assertEqual(completed.returncode, 1)
+
+class CliAdversarialRegressionTests(unittest.TestCase):
+    def test_check_text_neutralizes_control_characters(self):
+        completed = run_cli("check", "a\x1b[31m")
+        self.assertNotIn("\x1b", completed.stdout)
+        self.assertIn("\\x1B", completed.stdout)
+
+    def test_scan_text_neutralizes_filename_control_characters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "bad\x1b[31m.py")
+            path.write_text("import re\nre.compile(r'(a+)+')\n", encoding="utf-8")
+            completed = run_cli("scan", directory)
+            self.assertEqual(completed.returncode, 1)
+            self.assertNotIn("\x1b", completed.stdout)
+            self.assertIn("\\x1B", completed.stdout)

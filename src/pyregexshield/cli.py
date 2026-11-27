@@ -7,6 +7,7 @@ import json
 import re
 import sys
 
+from ._display import terminal_safe
 from .analyzer import analyze_regex
 from .policy import DEFAULT_POLICY
 from .scanner import scan_directory
@@ -78,10 +79,11 @@ def _check_command(args) -> int:
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
+        display_pattern = terminal_safe(args.pattern)
         if result.safe:
-            print("SAFE %s (risk %s, score %d)" % (args.pattern, result.risk_level, result.score))
+            print("SAFE %s (risk %s, score %d)" % (display_pattern, result.risk_level, result.score))
         else:
-            print("UNSAFE %s (risk %s, score %d)" % (args.pattern, result.risk_level, result.score))
+            print("UNSAFE %s (risk %s, score %d)" % (display_pattern, result.risk_level, result.score))
         for finding in result.findings:
             print(
                 "  %s %s at %d..%d: %s" % (
@@ -109,7 +111,7 @@ def _scan_command(args) -> int:
     try:
         report = scan_directory(args.path, policy=policy, strict=False, max_files=args.max_files)
     except (OSError, ValueError) as error:
-        print("pyregexshield scan: %s" % error, file=sys.stderr)
+        print("pyregexshield scan: %s" % terminal_safe(error), file=sys.stderr)
         return 2
 
     if args.format == "json":

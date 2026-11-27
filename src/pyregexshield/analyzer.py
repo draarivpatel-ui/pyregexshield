@@ -95,7 +95,7 @@ class _Metrics:
         if isinstance(node, LiteralNode):
             result = CharSet.from_char(node.char)
             if node.flags & re.IGNORECASE:
-                result = result.ignorecase_closure()
+                result = result.ignorecase_closure(bool(node.flags & re.ASCII))
         elif isinstance(node, DotNode):
             result = dot_charset(node.flags)
         elif isinstance(node, CharClassNode):
@@ -276,7 +276,7 @@ def charclass_charset(node: CharClassNode) -> CharSet:
             addition = CharSet.empty()
         result = result.union(addition)
     if node.flags & re.IGNORECASE:
-        result = result.ignorecase_closure()
+        result = result.ignorecase_closure(bool(node.flags & re.ASCII))
     if node.negated:
         result = result.complement()
     return result

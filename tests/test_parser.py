@@ -290,3 +290,68 @@ class ParserLimitTests(unittest.TestCase):
     def test_non_integer_flags_rejected(self):
         with self.assertRaises(TypeError):
             parse_regex("abc", "i")
+
+class ParserAdversarialRegressionTests(unittest.TestCase):
+    def test_leading_zero_octal_stops_before_non_octal_digit(self):
+        node = parse_regex(r"\08")
+        self.assertEqual([item.char for item in node.items], ["\x00", "8"])
+        node = parse_regex(r"\018")
+        self.assertEqual([item.char for item in node.items], ["\x01", "8"])
+
+    def test_class_octal_stops_before_non_octal_digit(self):
+        node = parse_regex(r"[\18]")
+        self.assertEqual(len(node.items), 2)
+        self.assertEqual(node.items[0].value, "\x01")
+        self.assertEqual(node.items[1].value, "8")
+        node = parse_regex(r"[\1118]")
+        self.assertEqual(len(node.items), 2)
+        self.assertEqual(node.items[0].value, "I")
+        self.assertEqual(node.items[1].value, "8")
+
+    def test_verbose_unicode_whitespace_is_literal(self):
+        node = parse_regex("(?x)a\u00a0b")
+        self.assertEqual([item.char for item in node.items], ["a", "\u00a0", "b"])
+        node = parse_regex("(?x)a\u2003b")
+        self.assertEqual([item.char for item in node.items], ["a", "\u2003", "b"])
+
+    def test_verbose_comment_does_not_contribute_global_flags(self):
+        pattern = "(?x)# (?i)\na"
+        self.assertFalse(scan_plain_inline_flags(pattern) & re.IGNORECASE)
+        node = parse_regex(pattern)
+        self.assertFalse(node.flags & re.IGNORECASE)
+        self.assertTrue(node.flags & re.VERBOSE)
+
+    def test_inline_flag_overlap_is_rejected(self):
+        for pattern in ("(?i-i:a)", "(?im-m:a)", "(?i-mi:a)"):
+            with self.assertRaises(RegexPatternError, msg=pattern):
+                parse_regex(pattern)
+
+    def test_empty_inline_flag_removal_is_rejected(self):
+        for pattern in ("(?i-:a)", "(?i-)"):
+            with self.assertRaises(RegexPatternError, msg=pattern):
+                parse_regex(pattern)
+
+    def test_scoped_locale_is_rejected_for_str_patterns(self):
+        with self.assertRaises(RegexPatternError):
+            parse_regex("(?L:a)")
+
+    def test_initial_ascii_unicode_combination_is_rejected(self):
+        with self.assertRaises(RegexPatternError):
+            parse_regex("a", re.ASCII | re.UNICODE)
+
+    def test_scoped_unicode_overrides_outer_ascii(self):
+        node = parse_regex(r"(?u:\w)", re.ASCII)
+        self.assertTrue(node.child.flags & re.UNICODE)
+        self.assertFalse(node.child.flags & re.ASCII)
+
+    def test_forward_numeric_conditional_is_accepted(self):
+        node = parse_regex("(?(1)a|b)(a)")
+        self.assertIsNotNone(node)
+
+    def test_open_numeric_conditional_is_accepted(self):
+        node = parse_regex("(a(?(1)b|c))")
+        self.assertIsNotNone(node)
+
+    def test_unresolved_forward_numeric_conditional_fails_at_end(self):
+        with self.assertRaises(RegexPatternError):
+            parse_regex("(?(2)a|b)(a)")

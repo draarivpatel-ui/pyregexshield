@@ -148,19 +148,24 @@ class CharSet:
     def overlaps(self, other: "CharSet") -> bool:
         return not self.intersection(other).is_empty()
 
-    def ignorecase_closure(self) -> "CharSet":
-        """Return the closure under Unicode-aware simple case matching.
+    def ignorecase_closure(self, ascii_only: bool = False) -> "CharSet":
+        """Return the closure under Python's simple case matching.
 
         Python's simple case folding table is not exposed directly by the
         standard library. The closure is derived once from the runtime Unicode
         character transformations, connected through inverse variant edges,
-        with the capital dotted-I special case matched by CPython. This keeps
-        ASCII exact while also covering inverse pairs such as K and the
-        Kelvin sign.
+        with the capital dotted-I special case matched by CPython. When
+        ascii_only is true, only ASCII input characters participate in case
+        folding and only ASCII case variants are added, matching re.ASCII.
         """
 
         additions = []
         for component in _case_components():
+            if ascii_only:
+                present = any(value < 128 and self._contains_value(value) for value in component)
+                if present:
+                    additions.extend((value, value) for value in component if value < 128)
+                continue
             present = False
             for value in component:
                 if self._contains_value(value):

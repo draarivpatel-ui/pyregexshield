@@ -11,7 +11,9 @@ import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
+from urllib.parse import quote
 
+from ._display import terminal_safe
 from .analyzer import analyze_regex
 from .policy import DEFAULT_POLICY, SEVERITY_ORDER, RegexPolicy
 
@@ -136,22 +138,22 @@ class ScanReport:
         for finding in self.findings:
             lines.append(
                 "%s:%d:%d: %s %s: %s" % (
-                    finding.filename,
+                    terminal_safe(finding.filename),
                     finding.line,
                     finding.column + 1,
                     finding.severity,
                     finding.code,
-                    finding.message,
+                    terminal_safe(finding.message),
                 )
             )
         for diagnostic in self.diagnostics:
             lines.append(
                 "%s:%d:%d: diagnostic %s: %s" % (
-                    diagnostic.filename,
+                    terminal_safe(diagnostic.filename),
                     diagnostic.line,
                     diagnostic.column,
                     diagnostic.code,
-                    diagnostic.message,
+                    terminal_safe(diagnostic.message),
                 )
             )
         if not lines:
@@ -205,6 +207,7 @@ class ScanReport:
             "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
             "version": "2.1.0",
             "runs": [{
+                "columnKind": "unicodeCodePoints",
                 "tool": {
                     "driver": {
                         "name": "pyregexshield",
@@ -230,8 +233,61 @@ def _sarif_level(severity: str) -> str:
     return "note"
 
 
+def _relative_artifact_path(filename: str) -> str:
+    if filename.startswith("<"):
+        return filename
+    try:
+        absolute = os.path.abspath(filename)
+        return os.path.relpath(absolute, os.getcwd())
+    except (OSError, ValueError):
+        return os.path.basename(filename) or "input.py"
+
+
 def _sarif_uri(filename: str) -> str:
-    return filename.replace(os.sep, "/")
+    filename = _relative_artifact_path(filename)
+    if os.sep != "/":
+        filename = filename.replace(os.sep, "/")
+    return quote(filename, safe="/")
+
+
+def _codepoint_column(lines, line: int, utf8_column: int) -> int:
+    if line < 1 or line > len(lines):
+        return utf8_column
+    text = lines[line - 1]
+    consumed = 0
+    for index, char in enumerate(text):
+        width = len(char.encode("utf-8"))
+        if consumed + width > utf8_column:
+            return index
+        consumed += width
+        if consumed == utf8_column:
+            return index + 1
+    return len(text)
+
+
+def _static_string_concat(node):
+    """Evaluate a finite tree of string literals joined only by addition."""
+
+    values = {}
+    stack = [(node, False)]
+    while stack:
+        current, expanded = stack.pop()
+        if isinstance(current, ast.Constant) and isinstance(current.value, str):
+            values[id(current)] = current.value
+            continue
+        if not isinstance(current, ast.BinOp) or not isinstance(current.op, ast.Add):
+            return None
+        if not expanded:
+            stack.append((current, True))
+            stack.append((current.left, False))
+            stack.append((current.right, False))
+            continue
+        left = values.pop(id(current.left), None)
+        right = values.pop(id(current.right), None)
+        if left is None or right is None:
+            return None
+        values[id(current)] = left + right
+    return values.get(id(node))
 
 
 def _merge_reports(reports) -> ScanReport:
@@ -265,6 +321,39 @@ def _collect_re_aliases(tree: ast.AST):
     if star_import:
         for name in SCAN_FUNCTIONS:
             function_aliases[name] = name
+
+    assignments = []
+    for node in ast.walk(tree):
+        value = None
+        targets = ()
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            value = node.value
+            targets = (node.target,)
+        if value is not None:
+            assignments.append((getattr(node, "lineno", 0), getattr(node, "col_offset", 0), value, targets))
+    assignments.sort(key=lambda item: (item[0], item[1]))
+
+    for _line, _column, value, targets in assignments:
+        resolved_module = False
+        resolved_function = None
+        if isinstance(value, ast.Name):
+            resolved_module = value.id in module_aliases
+            resolved_function = function_aliases.get(value.id)
+        elif isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+            if value.value.id in module_aliases and value.attr in SCAN_FUNCTIONS:
+                resolved_function = value.attr
+        if not resolved_module and resolved_function is None:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if resolved_module:
+                module_aliases.add(target.id)
+            else:
+                function_aliases[target.id] = resolved_function
     return module_aliases, function_aliases
 
 
@@ -310,7 +399,8 @@ def _extract_calls(tree: ast.AST):
                     break
         if pattern_node is None:
             continue
-        if not isinstance(pattern_node, ast.Constant) or not isinstance(pattern_node.value, str):
+        pattern_value = _static_string_concat(pattern_node)
+        if pattern_value is None:
             continue
 
         flags = 0
@@ -335,7 +425,7 @@ def _extract_calls(tree: ast.AST):
                 value = _flag_value(keyword.value, module_aliases)
                 if value is not None:
                     flags = value
-        yield function, pattern_node.value, flags, node
+        yield function, pattern_value, flags, node
 
 
 def scan_python_source(
@@ -363,17 +453,29 @@ def scan_python_source(
         column = (error.offset or 1) - 1
         diagnostic = ScanDiagnostic(filename, line, column, "SCAN_PYTHON_SYNTAX_ERROR", error.msg)
         return ScanReport((), (diagnostic,), 0, 1)
+    except (ValueError, RecursionError) as error:
+        diagnostic = ScanDiagnostic(filename, 1, 0, "SCAN_PYTHON_SYNTAX_ERROR", str(error))
+        return ScanReport((), (diagnostic,), 0, 1)
 
+    source_lines = source.splitlines(True)
     findings = []
     for function, pattern, flags, call in _extract_calls(tree):
         result = analyze_regex(pattern, flags=flags, policy=policy)
+        line = getattr(call, "lineno", 1)
+        end_line = getattr(call, "end_lineno", line)
+        column = _codepoint_column(source_lines, line, getattr(call, "col_offset", 0))
+        end_column = _codepoint_column(
+            source_lines,
+            end_line,
+            getattr(call, "end_col_offset", getattr(call, "col_offset", 0) + 1),
+        )
         for item in result.findings:
             findings.append(SourceFinding(
                 filename,
-                getattr(call, "lineno", 1),
-                getattr(call, "col_offset", 0),
-                getattr(call, "end_lineno", getattr(call, "lineno", 1)),
-                getattr(call, "end_col_offset", getattr(call, "col_offset", 0) + 1),
+                line,
+                column,
+                end_line,
+                end_column,
                 function,
                 pattern,
                 flags,
@@ -394,7 +496,7 @@ def scan_python_file(path, *, policy: Optional[RegexPolicy] = None, strict: bool
     if strict:
         policy = policy.strict()
     path = Path(path)
-    filename = str(path)
+    filename = _relative_artifact_path(str(path))
     try:
         info = path.lstat()
     except OSError as error:
@@ -414,11 +516,31 @@ def scan_python_file(path, *, policy: Optional[RegexPolicy] = None, strict: bool
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    descriptor = None
     try:
         descriptor = os.open(str(path), flags)
+        opened_info = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_info.st_mode):
+            os.close(descriptor)
+            descriptor = None
+            diagnostic = ScanDiagnostic(filename, 1, 0, "SCAN_NONREGULAR_SKIPPED", "not a regular file")
+            return ScanReport((), (diagnostic,), 0, 1)
+        if opened_info.st_size > policy.max_scan_file_bytes:
+            os.close(descriptor)
+            descriptor = None
+            diagnostic = ScanDiagnostic(filename, 1, 0, "SCAN_FILE_TOO_LARGE", "file exceeds max_scan_file_bytes")
+            return ScanReport((), (diagnostic,), 0, 1)
         with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
             data = handle.read(policy.max_scan_file_bytes + 1)
     except OSError as error:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         diagnostic = ScanDiagnostic(filename, 1, 0, "SCAN_FILE_ERROR", str(error))
         return ScanReport((), (diagnostic,), 0, 1)
 
@@ -454,12 +576,21 @@ def scan_directory(
     if strict:
         policy = policy.strict()
     root = Path(path)
-    if not root.exists():
+    root_display = _relative_artifact_path(str(root))
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError:
         raise FileNotFoundError(str(root))
-    if root.is_file():
+    except OSError as error:
+        diagnostic = ScanDiagnostic(root_display, 1, 0, "SCAN_FILE_ERROR", str(error))
+        return ScanReport((), (diagnostic,), 0, 1)
+    if stat.S_ISLNK(root_info.st_mode):
+        diagnostic = ScanDiagnostic(root_display, 1, 0, "SCAN_SYMLINK_SKIPPED", "symlink was not followed")
+        return ScanReport((), (diagnostic,), 0, 1)
+    if stat.S_ISREG(root_info.st_mode):
         return scan_python_file(root, policy=policy, strict=False)
-    if not root.is_dir():
-        diagnostic = ScanDiagnostic(str(root), 1, 0, "SCAN_NONREGULAR_SKIPPED", "not a directory or regular file")
+    if not stat.S_ISDIR(root_info.st_mode):
+        diagnostic = ScanDiagnostic(root_display, 1, 0, "SCAN_NONREGULAR_SKIPPED", "not a directory or regular file")
         return ScanReport((), (diagnostic,), 0, 1)
 
     reports = []
